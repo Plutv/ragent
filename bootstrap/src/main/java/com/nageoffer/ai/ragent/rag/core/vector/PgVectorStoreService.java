@@ -41,13 +41,11 @@ public class PgVectorStoreService implements VectorStoreService {
         }
 
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        jdbcTemplate.batchUpdate("INSERT INTO t_knowledge_vector (chunk_id, kb_id, doc_id, chunk_index, content, embedding) VALUES (?, ?, ?, ?, ?, ?::vector)", chunks, chunks.size(), (ps, chunk) -> {
+        jdbcTemplate.batchUpdate("INSERT INTO t_knowledge_vector (id, content, metadata, embedding) VALUES (?, ?, ?::jsonb, ?::vector)", chunks, chunks.size(), (ps, chunk) -> {
             ps.setString(1, chunk.getChunkId());
-            ps.setString(2, kbId);
-            ps.setString(3, docId);
-            ps.setInt(4, chunk.getIndex());
-            ps.setString(5, chunk.getContent());
-            ps.setString(6, toVectorLiteral(chunk.getEmbedding()));
+            ps.setString(2, chunk.getContent());
+            ps.setString(3, String.format("{\"kb_id\":\"%s\",\"doc_id\":\"%s\",\"chunk_index\":%d}", kbId, docId, chunk.getIndex()));
+            ps.setString(4, toVectorLiteral(chunk.getEmbedding()));
         });
 
         log.info("批量写入向量到 PostgreSQL，kbId={}, docId={}, count={}", kbId, docId, chunks.size());
@@ -56,25 +54,23 @@ public class PgVectorStoreService implements VectorStoreService {
     @Override
     public void deleteDocumentVectors(String kbId, String docId) {
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        int deleted = jdbcTemplate.update("DELETE FROM t_knowledge_vector WHERE kb_id = ? AND doc_id = ?", kbId, docId);
+        int deleted = jdbcTemplate.update("DELETE FROM t_knowledge_vector WHERE metadata->>'kb_id' = ? AND metadata->>'doc_id' = ?", kbId, docId);
         log.info("删除文档向量，kbId={}, docId={}, deleted={}", kbId, docId, deleted);
     }
 
     @Override
     public void deleteChunkById(String kbId, String chunkId) {
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        jdbcTemplate.update("DELETE FROM t_knowledge_vector WHERE chunk_id = ?", chunkId);
+        jdbcTemplate.update("DELETE FROM t_knowledge_vector WHERE id = ?", chunkId);
     }
 
     @Override
     public void updateChunk(String kbId, String docId, VectorChunk chunk) {
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        jdbcTemplate.update("INSERT INTO t_knowledge_vector (chunk_id, kb_id, doc_id, chunk_index, content, embedding) VALUES (?, ?, ?, ?, ?, ?::vector) ON CONFLICT (chunk_id) DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding",
+        jdbcTemplate.update("INSERT INTO t_knowledge_vector (id, content, metadata, embedding) VALUES (?, ?, ?::jsonb, ?::vector) ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding",
                 chunk.getChunkId(),
-                kbId,
-                docId,
-                chunk.getIndex(),
                 chunk.getContent(),
+                String.format("{\"kb_id\":\"%s\",\"doc_id\":\"%s\",\"chunk_index\":%d}", kbId, docId, chunk.getIndex()),
                 toVectorLiteral(chunk.getEmbedding())
         );
     }

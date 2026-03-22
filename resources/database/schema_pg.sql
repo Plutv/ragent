@@ -417,24 +417,19 @@ COMMENT ON TABLE t_ingestion_task_node IS '摄取任务节点表';
 -- ============================================
 
 CREATE TABLE t_knowledge_vector (
-    chunk_id    VARCHAR(20)  PRIMARY KEY,
-    kb_id       VARCHAR(20)       NOT NULL,
-    doc_id      VARCHAR(20)  NOT NULL,
-    chunk_index INTEGER,
+    id          VARCHAR(20) PRIMARY KEY,
     content     TEXT,
-    embedding   vector(1024),
-    created_at  TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP
+    metadata    JSONB,
+    embedding   vector(1024)
 );
 
-CREATE INDEX idx_kv_kb_doc ON t_knowledge_vector (kb_id, doc_id);
-COMMENT ON TABLE t_knowledge_vector IS '知识库向量存储表（pgvector）';
-COMMENT ON COLUMN t_knowledge_vector.chunk_id IS '分块ID（主键）';
-COMMENT ON COLUMN t_knowledge_vector.kb_id IS '知识库ID';
-COMMENT ON COLUMN t_knowledge_vector.doc_id IS '文档ID';
-COMMENT ON COLUMN t_knowledge_vector.chunk_index IS '分块序号';
+CREATE INDEX idx_kv_metadata ON t_knowledge_vector USING gin(metadata);
+CREATE INDEX idx_kv_embedding ON t_knowledge_vector USING hnsw (embedding vector_cosine_ops);
+COMMENT ON TABLE t_knowledge_vector IS '知识库向量存储表';
+COMMENT ON COLUMN t_knowledge_vector.id IS '分块ID';
 COMMENT ON COLUMN t_knowledge_vector.content IS '分块文本内容';
-COMMENT ON COLUMN t_knowledge_vector.embedding IS '向量（维度需与 rag.default.dimension 一致）';
-COMMENT ON COLUMN t_knowledge_vector.created_at IS '创建时间';
+COMMENT ON COLUMN t_knowledge_vector.metadata IS '元数据';
+COMMENT ON COLUMN t_knowledge_vector.embedding IS '向量';
 
 -- ============================================
 -- Column Comments

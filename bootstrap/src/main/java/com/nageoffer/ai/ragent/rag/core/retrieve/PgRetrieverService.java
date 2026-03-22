@@ -63,9 +63,9 @@ public class PgRetrieverService implements RetrieverService {
 
         String vectorLiteral = toVectorLiteral(vector);
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        return jdbcTemplate.query("SELECT chunk_id, content, 1 - (embedding <=> ?::vector) AS score FROM t_knowledge_vector WHERE kb_id = ? ORDER BY embedding <=> ?::vector LIMIT ?",
+        return jdbcTemplate.query("SELECT id, content, 1 - (embedding <=> ?::vector) AS score FROM t_knowledge_vector WHERE metadata->>'kb_id' = ? ORDER BY embedding <=> ?::vector LIMIT ?",
             (rs, rowNum) -> RetrievedChunk.builder()
-                .id(rs.getString("chunk_id"))
+                .id(rs.getString("id"))
                 .text(rs.getString("content"))
                 .score(rs.getFloat("score"))
                 .build(),
