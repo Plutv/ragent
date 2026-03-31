@@ -42,4 +42,4 @@ node_modules/
 dist/
 .vite/
 .env.local
-bootstrap/src/main/resources/application.yaml
+application.yaml
