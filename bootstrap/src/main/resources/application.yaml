@@ -16,7 +16,7 @@ spring:
     driver-class-name: org.postgresql.Driver
     type: com.zaxxer.hikari.HikariDataSource
     username: postgres
-    password: postgres
+    password: 123456
     url: jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8
     hikari:
       connection-timeout: 5000
@@ -30,7 +30,6 @@ spring:
     redis:
       host: 127.0.0.1
       port: 6379
-      password: 123456
 
 rocketmq:
   name-server: 127.0.0.1:9876
