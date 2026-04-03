@@ -4,6 +4,15 @@ temp
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+### Runtime / local artifacts ###
+*.log
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+*.pid
+*.jar.testcopy
+.m2-temp/
+
 ### STS ###
 .apt_generated
 .classpath

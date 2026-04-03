@@ -35,7 +35,7 @@ rocketmq:
   name-server: 127.0.0.1:9876
   producer:
     group: ragent-producer${unique-name:}_pg
-    send-message-timeout: 2000
+    send-message-timeout: 10000
 
 milvus:
   uri: http://localhost:19530
@@ -46,7 +46,7 @@ rag:
 
   default:
     collection-name: rag_default_store
-    dimension: 1536
+    dimension: 1024
     metric-type: COSINE
 
   query-rewrite:
@@ -153,18 +153,18 @@ ai:
         priority: 2
 
   embedding:
-    default-model: qwen-emb-8b
+    default-model: qwen-emb-local
     candidates:
       - id: qwen-emb-8b
         provider: siliconflow
         model: Qwen/Qwen3-Embedding-8B
         dimension: ${rag.default.dimension}
-        priority: 1
+        priority: 2
       - id: qwen-emb-local
         provider: ollama
-        model: qwen3-embedding:8b-fp16
+        model: bge-m3:latest
         dimension: ${rag.default.dimension}
-        priority: 2
+        priority: 1
 
   rerank:
     default-model: qwen3-rerank
