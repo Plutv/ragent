@@ -18,17 +18,23 @@
 package com.nageoffer.ai.ragent.rag.service.impl;
 
 import cn.hutool.core.lang.Assert;
+import com.nageoffer.ai.ragent.framework.errorcode.BaseErrorCode;
+import com.nageoffer.ai.ragent.framework.exception.ServiceException;
 import com.nageoffer.ai.ragent.rag.dto.StoredFileDTO;
 import com.nageoffer.ai.ragent.rag.service.FileStorageService;
 import com.nageoffer.ai.ragent.rag.util.FileTypeDetector;
 import lombok.RequiredArgsConstructor;
-import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.Tika;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
+import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 
@@ -42,57 +48,69 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class S3FileStorageService implements FileStorageService {
-
-    private final S3Client s3Client;
-    private final S3Presigner s3Presigner;
 
     private static final Tika TIKA = new Tika();
     private static final Duration PRESIGN_DURATION = Duration.ofMinutes(10);
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 60_000;
 
+    private final S3Client s3Client;
+    private final S3Presigner s3Presigner;
+
     @Override
-    @SneakyThrows
     public StoredFileDTO upload(String bucketName, MultipartFile file) {
         validateBucketName(bucketName);
         Assert.isFalse(file == null || file.isEmpty(), "上传文件不能为空");
+        ensureBucketExists(bucketName);
 
         String originalFilename = file.getOriginalFilename();
         long size = file.getSize();
 
-        // TIKA 只读流的前几 KB 来探测类型，不会加载整个文件
         String detectedContentType;
         try (InputStream is = file.getInputStream()) {
             detectedContentType = TIKA.detect(is, originalFilename);
+        } catch (IOException e) {
+            throw storageException("读取上传文件失败", e);
         }
 
-        // MultipartFile.getInputStream() 每次调用都返回新流（从底层临时文件重新打开），无需再创建临时文件
         try (InputStream is = file.getInputStream()) {
             return streamUploadToS3(bucketName, is, size, originalFilename, detectedContentType);
+        } catch (IOException e) {
+            throw storageException("上传文件到对象存储失败", e);
         }
     }
 
     @Override
-    @SneakyThrows
     public StoredFileDTO upload(String bucketName, InputStream content, long size, String originalFilename, String contentType) {
         validateBucketName(bucketName);
         Assert.notNull(content, "上传内容不能为空");
         Assert.isTrue(size >= 0, "上传内容大小不能小于 0");
+        ensureBucketExists(bucketName);
+
         String detected = resolveContentType(originalFilename, contentType);
-        return streamUploadToS3(bucketName, content, size, originalFilename, detected);
+        try {
+            return streamUploadToS3(bucketName, content, size, originalFilename, detected);
+        } catch (IOException e) {
+            throw storageException("上传文件流到对象存储失败", e);
+        }
     }
 
     @Override
-    @SneakyThrows
     public StoredFileDTO upload(String bucketName, byte[] content, String originalFilename, String contentType) {
         validateBucketName(bucketName);
         Assert.notNull(content, "上传内容不能为空");
+        ensureBucketExists(bucketName);
+
         String detected = resolveContentType(originalFilename, contentType);
-        // byte[] 本身已在内存中，ByteArrayInputStream 不产生额外拷贝
-        return streamUploadToS3(bucketName, new ByteArrayInputStream(content), content.length, originalFilename, detected);
+        try {
+            return streamUploadToS3(bucketName, new ByteArrayInputStream(content), content.length, originalFilename, detected);
+        } catch (IOException e) {
+            throw storageException("上传字节内容到对象存储失败", e);
+        }
     }
 
     @Override
@@ -102,30 +120,16 @@ public class S3FileStorageService implements FileStorageService {
     }
 
     @Override
-    @SneakyThrows
     public void deleteByUrl(String url) {
         S3Location loc = parseS3Url(url);
         s3Client.deleteObject(b -> b.bucket(loc.bucket()).key(loc.key()));
     }
 
-    /**
-     * 通过 S3Presigner 生成预签名 URL，配合 HttpURLConnection 流式上传
-     * <p>
-     * 为什么不用 SDK 的 putObject / S3TransferManager？
-     * AWS SDK v2 (截至 2.40.x) 的所有同步/异步上传 API 都会在 SigV4 签名管线中
-     * 将 payload 缓冲到堆内存（即使使用 RequestBody.fromFile）
-     * <p>
-     * 预签名 URL 将鉴权信息编码到 URL 查询参数中，payload 使用 UNSIGNED-PAYLOAD，
-     * 不需要预读内容计算 SHA-256。HttpURLConnection.setFixedLengthStreamingMode
-     * 保证请求体流式发送，全程堆内存占用仅为内部 buffer 大小
-     */
-    @SneakyThrows
     private StoredFileDTO streamUploadToS3(String bucketName, InputStream inputStream,
                                            long size, String originalFilename,
-                                           String detectedContentType) {
+                                           String detectedContentType) throws IOException {
         String s3Key = generateS3Key(originalFilename);
 
-        // 1. 生成预签名 URL（纯 CPU 计算，无 IO）
         PresignedPutObjectRequest presignedReq = s3Presigner.presignPutObject(p -> p
                 .signatureDuration(PRESIGN_DURATION)
                 .putObjectRequest(PutObjectRequest.builder()
@@ -134,23 +138,21 @@ public class S3FileStorageService implements FileStorageService {
                         .contentType(detectedContentType)
                         .build()));
 
-        // 2. 流式上传
         streamPutViaPresignedUrl(presignedReq, inputStream, size, detectedContentType);
 
-        // 3. 构建返回结果
         String url = toS3Url(bucketName, s3Key);
         return buildStoredFileDTO(url, originalFilename, detectedContentType, size);
     }
 
     @Override
-    @SneakyThrows
     public StoredFileDTO reliableUpload(String bucketName, InputStream content, long size,
                                         String originalFilename, String contentType) {
         validateBucketName(bucketName);
         Assert.notNull(content, "上传内容不能为空");
         Assert.isTrue(size >= 0, "上传内容大小不能小于 0");
-        String detected = resolveContentType(originalFilename, contentType);
+        ensureBucketExists(bucketName);
 
+        String detected = resolveContentType(originalFilename, contentType);
         String s3Key = generateS3Key(originalFilename);
 
         s3Client.putObject(
@@ -165,9 +167,29 @@ public class S3FileStorageService implements FileStorageService {
         return buildStoredFileDTO(url, originalFilename, detected, size);
     }
 
-    /**
-     * 使用预签名 URL 执行 HTTP PUT 流式上传
-     */
+    private void ensureBucketExists(String bucketName) {
+        try {
+            s3Client.headBucket(builder -> builder.bucket(bucketName));
+            return;
+        } catch (NoSuchBucketException e) {
+            log.warn("对象存储桶不存在，准备自动创建，bucketName={}", bucketName);
+        } catch (S3Exception e) {
+            if (e.statusCode() != 404) {
+                throw storageException("检查对象存储桶失败: " + bucketName, e);
+            }
+            log.warn("对象存储桶返回 404，准备自动创建，bucketName={}", bucketName);
+        }
+
+        try {
+            s3Client.createBucket(builder -> builder.bucket(bucketName));
+            log.info("自动创建对象存储桶成功，bucketName={}", bucketName);
+        } catch (BucketAlreadyOwnedByYouException | BucketAlreadyExistsException e) {
+            log.info("对象存储桶已存在，跳过创建，bucketName={}", bucketName);
+        } catch (S3Exception e) {
+            throw storageException("创建对象存储桶失败: " + bucketName, e);
+        }
+    }
+
     private void streamPutViaPresignedUrl(PresignedPutObjectRequest presignedReq,
                                           InputStream inputStream,
                                           long size,
@@ -232,11 +254,10 @@ public class S3FileStorageService implements FileStorageService {
         return new S3Location(bucket, key);
     }
 
-    private record S3Location(String bucket, String key) {
-    }
-
     private String extractSuffix(String filename) {
-        if (filename == null) return "";
+        if (filename == null) {
+            return "";
+        }
         int idx = filename.lastIndexOf('.');
         return (idx < 0 || idx == filename.length() - 1) ? "" : filename.substring(idx + 1).trim();
     }
@@ -264,8 +285,19 @@ public class S3FileStorageService implements FileStorageService {
     }
 
     private String resolveContentType(String originalFilename, String contentType) {
-        if (contentType != null && !contentType.isBlank()) return contentType;
-        if (originalFilename != null && !originalFilename.isBlank()) return TIKA.detect(originalFilename);
+        if (contentType != null && !contentType.isBlank()) {
+            return contentType;
+        }
+        if (originalFilename != null && !originalFilename.isBlank()) {
+            return TIKA.detect(originalFilename);
+        }
         return null;
+    }
+
+    private ServiceException storageException(String message, Throwable cause) {
+        return new ServiceException(message, cause, BaseErrorCode.SERVICE_ERROR);
+    }
+
+    private record S3Location(String bucket, String key) {
     }
 }

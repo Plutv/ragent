@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:latest
+    container_name: dev-redis
+    ports:
+      - "6379:6379"
+
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: dev-pgvector
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.3.2
+    container_name: rmq-namesrv
+    ports:
+      - "9876:9876"
+    command: sh mqnamesrv
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.2
+    container_name: rmq-broker
+    depends_on:
+      - rocketmq-namesrv
+    ports:
+      - "10911:10911"
+      - "10909:10909"
+      - "10912:10912"
+    environment:
+      NAMESRV_ADDR: "rocketmq-namesrv:9876"
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m -Xmn128m"
+    volumes:
+      - ./rocketmq/broker.conf:/tmp/broker.conf:ro
+    command: sh mqbroker -n rocketmq-namesrv:9876 -c /tmp/broker.conf --enable-proxy
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0-alpha.72
+    container_name: dev-rustfs
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rustfs-data:/data
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
+    command: >
+      --address :9000
+      --console-enable
+      --access-key rustfsadmin
+      --secret-key rustfsadmin
+      /data
+
+volumes:
+  pgdata:
+  rustfs-data:
